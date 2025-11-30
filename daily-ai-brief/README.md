@@ -8,7 +8,7 @@ A personalized daily news brief powered by real RSS feeds and your choice of AI 
 
 **Live Demo:** → [https://daily-ai-brief.streamlit.app](https://daily-ai-brief.streamlit.app)
 
-[![Daily AI Brief Screenshot](screenshot.png)](https://daily-ai-brief.streamlit.app/)
+[![Daily AI Brief in Action](AI_Daily_Brief.png)](https://daily-ai-brief.streamlit.app/)
 
 ### Features
 - Real-time headlines from trusted sources (TechCrunch, BBC, NPR, Google News)
