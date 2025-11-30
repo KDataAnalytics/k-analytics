@@ -1,0 +1,4 @@
+- **[Daily AI News Brief](news-summarizer/)**
+  - Scrapes live headlines (Google News, BBC, etc.)
+  - One-line switch between OpenAI, Gemini, and Grok backends
+  - Ready for daily email automation
