@@ -25,7 +25,7 @@ st.caption(f"Today • {datetime.now():%A, %B %d, %Y}")
 
 # ——— MOBILE HINT (always visible) ———
 st.markdown("""
-**👈 On mobile?** Swipe from the left edge or tap the ≡ menu to open settings
+**📱 Mobile user?** Tap the **>** in the top-left to open the menu
 """)
 
 # ——— USER PERSONA (now in always-visible sidebar) ———
