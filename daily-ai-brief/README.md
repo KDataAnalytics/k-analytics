@@ -1,10 +1,14 @@
+![Python](https://img.shields.io/badge/Python-3.12-blue)
+![Streamlit](https://img.shields.io/badge/Streamlit-Live%20App-green)
+![AI](https://img.shields.io/badge/AI-OpenAI%20Gemini%20Grok-orange)
+
 # Daily AI Intelligence Brief (Live Web App)
 
 A personalized daily news brief powered by real RSS feeds and your choice of AI backend.
 
 **Live Demo:** → [https://daily-ai-brief.streamlit.app](https://daily-ai-brief.streamlit.app)
 
-![Daily AI Brief in Action](AI_Daily_Brief.png)
+[![Daily AI Brief Screenshot](screenshot.png)](https://daily-ai-brief.streamlit.app/)
 
 ### Features
 - Real-time headlines from trusted sources (TechCrunch, BBC, NPR, Google News)
