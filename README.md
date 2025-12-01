@@ -2,7 +2,7 @@
 ![Scraping](https://img.shields.io/badge/scraping-requests%20%2B%20BeautifulSoup4-brightgreen)
 ![AI](https://img.shields.io/badge/AI-OpenAI%20Gemini%20Grok-orange)
 
-# KC-Analytics
+# k-analytics
 
 Real-world Python + AI projects: data profiling, visualization, LLM integration
 
@@ -26,10 +26,10 @@ New projects added regularly — feedback welcome!
   - AI tailors insights to your role (Investor, CEO, Analyst) and focus (AI, Finance, etc.)  
   - Multi-LLM backend with depth control — try it now: [Live Demo](https://daily-ai-brief.streamlit.app/)
  
-* **[Microsoft Copilot for Analysts](https://github.com/garytaylor2u-hub/KC-analytics/tree/main/Microsoft%20Copilot%20for%20Analysts/)**
+* **[Microsoft Copilot for Analysts](https://github.com/garytaylor2u-hub/k-analytics/tree/main/Microsoft%20Copilot%20for%20Analysts/)**
   - Real-world M365 Copilot use: raw CSV → AI-generated analysis + full PowerPoint deck in seconds
   - Excel + PowerPoint automation — zero code, 100% native Copilot (2025)
-  - [Live Example](https://github.com/garytaylor2u-hub/KC-analytics/blob/main/Microsoft%20Copilot%20for%20Analysts/sales_trends.pptx) | [Screenshot](https://github.com/garytaylor2u-hub/KC-analytics/blob/main/Microsoft%20Copilot%20for%20Analysts/PowerPointExample.png)
+  - [Live Example](https://github.com/garytaylor2u-hub/k-analytics/blob/main/Microsoft%20Copilot%20for%20Analysts/sales_trends.pptx) | [Screenshot](https://github.com/garytaylor2u-hub/k-analytics/blob/main/Microsoft%20Copilot%20for%20Analysts/PowerPointExample.png)
 
 All code is clean, commented, and ready to run.
 
