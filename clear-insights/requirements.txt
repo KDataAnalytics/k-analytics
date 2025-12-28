@@ -1,0 +1,17 @@
+# these are requirements for clear insights
+
+streamlit
+pandas
+numpy
+
+# Visualization
+matplotlib
+plotly
+
+# Machine learning
+scikit-learn
+xgboost
+lightgbm
+
+# Time series forecasting
+prophet
