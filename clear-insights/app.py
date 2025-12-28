@@ -418,134 +418,309 @@ def step_2_objective():
     back_button(1)
 
 # ------------------------------------------------------------
-# STEP 3A — TIME-SERIES ANALYSIS (Final - Daily Chart + Monthly Export)
+# STEP 3A — TIME-SERIES ANALYSIS (Smart detection + confirmation)
+#   - Auto-detects: date column, frequency, metric
+#   - Excludes ID-like columns (Row ID, *_id, index, etc.)
+#   - Aggregates transactions to the chosen frequency before Prophet
+#   - Stores results in session_state in a way that supports BOTH:
+#       * your updated Insights block (uses r["forecast"] + timeseries_actuals)
+#       * your older Insights code (expects r["forecast_daily"] / r["forecast_monthly"])
 # ------------------------------------------------------------
 def run_timeseries():
     df = st.session_state.df.copy()
     st.title("📈 Time-Series Forecasting")
 
-    st.markdown("Select the date column and the numeric value to forecast.")
+    st.markdown(
+        "We’ve analyzed your data and made a few smart choices below. "
+        "Please review and confirm before generating the forecast."
+    )
 
-    date_cols = [c for c in df.columns if pd.to_datetime(df[c], errors='coerce').notna().any()]
-    value_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    # -------------------------
+    # Helper functions
+    # -------------------------
+    def looks_like_id_column(s: pd.Series, name: str) -> bool:
+        """Heuristics to exclude ID/index columns from date auto-detection."""
+        name_lower = str(name).lower()
 
-    if not date_cols or not value_cols:
-        st.error("Need at least one date column and one numeric column.")
+        # Name-based ID/index patterns
+        if any(x in name_lower for x in ["row id", "row_id", "index", "idx", "record", "uuid"]):
+            return True
+
+        # Generic "*id*" names are usually identifiers (unless they also look like date keys)
+        if "id" in name_lower and not any(x in name_lower for x in ["date", "day", "month", "time", "timestamp", "key"]):
+            return True
+
+        # Sequential-ish integer columns with very high uniqueness are often IDs
+        if pd.api.types.is_integer_dtype(s):
+            s2 = s.dropna()
+            if len(s2) == 0:
+                return False
+
+            uniq_ratio = s2.nunique() / len(s2)
+            if uniq_ratio > 0.98:
+                vals = np.sort(s2.unique())
+                if len(vals) >= 10:
+                    diffs = np.diff(vals)
+                    # Common row id pattern: strictly increasing by 1
+                    if np.all(diffs > 0) and np.median(diffs) == 1:
+                        return True
+
+        return False
+
+    def parse_date_series(s: pd.Series) -> pd.Series:
+        """
+        Robust date parsing:
+        - If numeric and looks like YYYYMMDD (e.g., 20241109), parse with format.
+        - Otherwise try standard parsing.
+        """
+        # Numeric / integer-like: try YYYYMMDD (Date Key style)
+        if pd.api.types.is_numeric_dtype(s):
+            dt = pd.to_datetime(s.astype("Int64").astype(str), format="%Y%m%d", errors="coerce")
+            if dt.notna().mean() >= 0.90:
+                return dt
+
+        # String/object: try normal parsing
+        return pd.to_datetime(s, errors="coerce")
+
+    def score_date_column(s: pd.Series) -> float:
+        """Score by % parseable as dates."""
+        parsed = parse_date_series(s)
+        return float(parsed.notna().mean())
+
+    def score_value_column(s: pd.Series) -> float:
+        """Prefer columns with good coverage + enough variation to forecast."""
+        s2 = pd.to_numeric(s, errors="coerce")
+        non_null = float(s2.notna().mean())
+        variability = float(s2.std() / (s2.mean() + 1e-9)) if s2.notna().any() else 0.0
+        return non_null + variability
+
+    def infer_frequency(dates: pd.Series) -> str:
+        """Infer typical spacing between dates."""
+        d = dates.sort_values()
+        deltas = d.diff().dt.days.dropna()
+        if deltas.empty:
+            return "Daily"
+        median = deltas.median()
+        if median <= 1:
+            return "Daily"
+        elif median <= 7:
+            return "Weekly"
+        else:
+            return "Monthly"
+
+    # -------------------------
+    # Detect candidates
+    # -------------------------
+    date_candidates = []
+    date_scores = {}
+
+    for c in df.columns:
+        try:
+            if looks_like_id_column(df[c], c):
+                continue
+            sc = score_date_column(df[c])
+            if sc >= 0.30:  # stricter threshold to reduce false positives
+                date_candidates.append(c)
+                date_scores[c] = sc
+        except Exception:
+            pass
+
+    value_candidates = df.select_dtypes(include=[np.number]).columns.tolist()
+
+    if not date_candidates:
+        st.error(
+            "We couldn’t confidently identify a date column. "
+            "Please make sure your file has a column with real calendar dates "
+            "(e.g., Order Date, Transaction Date) in a consistent format."
+        )
         back_button(2)
         return
 
-    col1, col2 = st.columns(2)
-    with col1:
-        date_col = st.selectbox("Date column", date_cols)
-    with col2:
-        value_col = st.selectbox("Value to forecast", value_cols)
-
-    # Prepare data
-    df_ts = df[[date_col, value_col]].copy()
-    df_ts[date_col] = pd.to_datetime(df_ts[date_col], errors='coerce')
-    df_ts = df_ts.dropna(subset=[date_col, value_col])
-    df_ts = df_ts.sort_values(date_col)
-
-    # Daily frequency for smooth Prophet forecast
-    df_daily = df_ts.set_index(date_col).asfreq('D').ffill()
-    prophet_df = df_daily.reset_index().rename(columns={date_col: "ds", value_col: "y"})
-
-    if len(prophet_df) < 30:
-        st.error("Need at least 30 days of data for reliable forecasting.")
+    if not value_candidates:
+        st.error("We couldn’t find a numeric column to forecast (e.g., Sales, Profit).")
+        back_button(2)
         return
 
-    st.subheader(f"Historical {value_col}")
-    fig_hist = px.line(prophet_df, x="ds", y="y", title=f"{value_col} Over Time", markers=True)
+    # -------------------------
+    # Auto-select best options
+    # -------------------------
+    best_date = max(date_candidates, key=lambda c: date_scores.get(c, 0.0))
+    best_value = max(value_candidates, key=lambda c: score_value_column(df[c]))
+
+    parsed_best_dates = parse_date_series(df[best_date]).dropna()
+    inferred_freq = infer_frequency(parsed_best_dates) if not parsed_best_dates.empty else "Daily"
+
+    # -------------------------
+    # Confirmation UI
+    # -------------------------
+    st.subheader("Confirm forecasting setup")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        date_col = st.selectbox(
+            "Date column (calendar time)",
+            options=date_candidates,
+            index=date_candidates.index(best_date),
+            help="We selected the column with the highest percentage of valid dates. "
+                 "This should represent real calendar time (not an ID or row number)."
+        )
+
+    with col2:
+        freq = st.selectbox(
+            "Data frequency",
+            options=["Daily", "Weekly", "Monthly"],
+            index=["Daily", "Weekly", "Monthly"].index(inferred_freq),
+            help="We inferred this from the typical spacing between dates. You can override it."
+        )
+
+    with col3:
+        value_col = st.selectbox(
+            "Metric to forecast",
+            options=value_candidates,
+            index=value_candidates.index(best_value),
+            help="We recommend metrics with good coverage and meaningful variation."
+        )
+
+    with st.expander("Why we chose these defaults"):
+        st.markdown(
+            f"""
+            **Date column:** `{best_date}`  
+            Chosen because it had the highest share of values that could be interpreted as dates
+            ({date_scores.get(best_date, 0.0):.0%} parseable).
+
+            **Frequency:** `{inferred_freq}`  
+            Inferred from the typical spacing between dates.
+
+            **Metric:** `{best_value}`  
+            Recommended based on completeness and variation (a good signal for forecasting).
+            """
+        )
+
+    # -------------------------
+    # Prepare data
+    # -------------------------
+    df_ts = df[[date_col, value_col]].copy()
+    df_ts[date_col] = parse_date_series(df_ts[date_col])
+    df_ts = df_ts.dropna(subset=[date_col, value_col])
+
+    if df_ts.empty:
+        st.error(
+            "No valid rows remain after parsing the date and metric columns. "
+            "Please choose a different date/metric column."
+        )
+        return
+
+    # Aggregate transactions to selected frequency
+    freq_map = {"Daily": "D", "Weekly": "W", "Monthly": "ME"}
+
+    df_agg = (
+        df_ts.groupby(pd.Grouper(key=date_col, freq=freq_map[freq]))[value_col]
+            .sum()
+            .reset_index()
+            .sort_values(date_col)
+    )
+
+    if len(df_agg) < 30:
+        st.error(
+            f"Not enough data points after aggregation ({len(df_agg)} found). "
+            "Time-series forecasting works best with at least ~30 periods."
+        )
+        st.info(
+            "Try choosing a different frequency (e.g., Weekly or Monthly), "
+            "or select a different date column."
+        )
+        return
+
+    prophet_df = df_agg.rename(columns={date_col: "ds", value_col: "y"})
+
+    # Store the aggregated historical actuals for the Insights page (recommended)
+    st.session_state.timeseries_actuals = prophet_df.copy()
+
+    # -------------------------
+    # Historical chart
+    # -------------------------
+    st.subheader(f"Historical {value_col} ({freq})")
+    fig_hist = px.line(prophet_df, x="ds", y="y")
     st.plotly_chart(fig_hist, use_container_width=True)
 
+    # -------------------------
+    # Forecast
+    # -------------------------
     if st.button("Generate 90-Day Forecast", type="primary"):
-        with st.spinner("Building forecast..."):
+        with st.spinner("Building forecast…"):
             m = Prophet(
                 yearly_seasonality=True,
-                weekly_seasonality=True,
+                weekly_seasonality=(freq != "Monthly"),
                 daily_seasonality=False,
                 changepoint_prior_scale=0.05
             )
             m.fit(prophet_df)
 
-            future = m.make_future_dataframe(periods=90, freq='D')
+            future = m.make_future_dataframe(periods=90, freq=freq_map[freq])
             forecast = m.predict(future)
 
-            # Daily chart
-            st.subheader("90-Day Forecast")
+            st.subheader("Forecast")
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=prophet_df["ds"], y=prophet_df["y"],
-                mode="lines+markers", name="Historical", line=dict(color="blue")
-            ))
-            fig.add_trace(go.Scatter(
-                x=forecast["ds"], y=forecast["yhat"],
-                mode="lines", name="Forecast", line=dict(color="green")
-            ))
+            fig.add_trace(go.Scatter(x=prophet_df["ds"], y=prophet_df["y"], mode="lines", name="Historical"))
+            fig.add_trace(go.Scatter(x=forecast["ds"], y=forecast["yhat"], mode="lines", name="Forecast"))
             fig.add_trace(go.Scatter(
                 x=forecast["ds"], y=forecast["yhat_upper"],
                 mode="lines", line=dict(width=0), showlegend=False
             ))
             fig.add_trace(go.Scatter(
                 x=forecast["ds"], y=forecast["yhat_lower"],
-                mode="lines", fill="tonexty",
-                fillcolor="rgba(0,176,246,0.2)", line=dict(width=0), name="95% Confidence"
+                mode="lines", fill="tonexty", line=dict(width=0),
+                name="Confidence interval"
             ))
-            fig.update_layout(title="Historical + 90-Day Forecast", hovermode="x unified")
+            fig.update_layout(hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
 
-            # Monthly export (practical)
-            export_monthly = forecast.set_index("ds").resample('ME')[["yhat", "yhat_lower", "yhat_upper"]].mean()
-            export_monthly = export_monthly.reset_index()
-            export_monthly = export_monthly.rename(columns={"ds": date_col})
-            export_monthly = pd.merge(
-                df_ts.reset_index()[[date_col, value_col]],
-                export_monthly,
-                on=date_col,
-                how="right"
-            )
+            # Build monthly summary for downloads/insights (even if freq is weekly/monthly)
+            try:
+                export_monthly = (
+                    forecast.set_index("ds")[["yhat", "yhat_lower", "yhat_upper"]]
+                            .resample("ME").mean()
+                            .reset_index()
+                            .rename(columns={"ds": date_col})
+                )
 
-            csv = export_monthly.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="⬇️ Download Monthly Historical + Forecast",
-                data=csv,
-                file_name=f"monthly_forecast_{value_col}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+                hist_monthly = (
+                    prophet_df.set_index("ds")[["y"]]
+                             .resample("ME").sum()
+                             .reset_index()
+                             .rename(columns={"ds": date_col, "y": f"historical_{value_col}"})
+                )
 
-            # Store both for insights
+                export_monthly = export_monthly.merge(hist_monthly, on=date_col, how="left")
+            except Exception:
+                export_monthly = None
+
+            # Store results for insights (compatible with both new and old Insights code)
             st.session_state.timeseries_results = {
-                "forecast_daily": forecast,
-                "forecast_monthly": export_monthly,
+                # New-style keys
+                "forecast": forecast,
                 "value_col": value_col,
-                "date_col": date_col
+                "date_col": date_col,
+                "frequency": freq,
+
+                # Backwards-compatible keys (older insights expects these)
+                "forecast_daily": forecast,
+                "forecast_monthly": export_monthly if export_monthly is not None else forecast
             }
 
-    # === Bottom navigation ===
+    # Bottom navigation
     st.markdown("---")
     back_button(2)
 
-    if 'timeseries_results' in st.session_state:
+    # Show Continue only after forecast is generated
+    if "timeseries_results" in st.session_state:
         if st.button("Continue → Insights Summary", type="primary", key="timeseries_continue"):
             st.session_state.current_analysis = "timeseries"
             st.session_state.step = 5
             st.rerun()
 
     st.session_state.analysis_complete = True
-        
-   # # === Bottom navigation ===
-   # st.markdown("---")
-   # back_button(2)
-
-    # Show Continue only after forecast is generated
-    #if 'timeseries_results' in st.session_state:
-    #    if st.button("Continue → Insights Summary", type="primary", key="timeseries_continue"):
-    #        st.session_state.current_analysis = "timeseries"
-    #        st.session_state.step = 5
-    #        st.rerun()
-    #else:
-    #    st.info("👆 Generate a forecast above to continue to the insights summary.")
       
 # ------------------------------------------------------------
 # STEP 3B — CHURN ANALYSIS (v2.3 Final - No SHAP, Clean Drivers)
@@ -1034,7 +1209,7 @@ def step_3_run_analysis():
     #        st.rerun()
 
 # ------------------------------------------------------------
-# STEP 4 — INSIGHTS SUMMARY (Supports Churn + Regression + Time-Series)
+# STEP 4 — INSIGHTS SUMMARY (Supports Churn + Regression + Time-Series + Clustering)
 # ------------------------------------------------------------
 def step_4_insights():
     st.title("💡 Step 5: Insights & Recommendations")
@@ -1052,8 +1227,10 @@ def step_4_insights():
                 st.session_state.step = 3
                 st.rerun()
             return
+
         r = st.session_state.churn_results
         st.success("Churn Analysis Complete! Here's your actionable summary.")
+
         # Key Metrics
         col1, col2, col3 = st.columns(3)
         col1.metric("Historical Churn Rate", f"{r['historical_churn_rate']:.1%}")
@@ -1062,6 +1239,7 @@ def step_4_insights():
             f"High-Risk Customers (top {r['high_risk_threshold_pct']}%)",
             f"{len(r['high_risk_customers']):,}"
         )
+
         # Drivers
         st.markdown("#### 📈 Top Predictive Drivers")
         st.info("""
@@ -1070,19 +1248,23 @@ These are the features your model found most important for predicting churn.
 - Positive = increases churn risk
 - Negative = reduces churn risk
 """)
+
         if r["importances"] is not None:
             df_importance = pd.DataFrame({
                 "Feature": r["feature_names"],
                 "Importance": r["importances"]
             }).sort_values("Importance", ascending=False).head(15)
+
             col_name = "Abs Coefficient" if "Logistic" in r["best_model_name"] else "Importance"
             df_importance = df_importance.rename(columns={"Importance": col_name})
+
             st.dataframe(
                 df_importance.style.format({col_name: "{:.4f}"}),
                 use_container_width=True
             )
         else:
             st.info("Feature importance not available for this model.")
+
         # Recommendations
         st.markdown("#### 💡 Actionable Recommendations")
         st.write("""
@@ -1092,9 +1274,11 @@ These are the features your model found most important for predicting churn.
 4. Re-run this analysis monthly to measure improvements.
 5. Export results to your CRM to activate retention workflows.
 """)
+
         # Export
         st.markdown("### 📥 Export Options")
         col1, col2 = st.columns(2)
+
         with col1:
             csv_full = r["df_with_preds"].to_csv(index=False).encode("utf-8")
             st.download_button(
@@ -1103,6 +1287,7 @@ These are the features your model found most important for predicting churn.
                 file_name="clear_insights_all_customers_with_predictions.csv",
                 mime="text/csv"
             )
+
         with col2:
             csv_risk = (
                 r["high_risk_customers"]
@@ -1118,7 +1303,7 @@ These are the features your model found most important for predicting churn.
             )
 
     # ============================================================
-    # REGRESSION INSIGHTS (Fixed & Added)
+    # REGRESSION INSIGHTS
     # ============================================================
     elif analysis_type == "regression":
         if "regression_results" not in st.session_state:
@@ -1136,13 +1321,12 @@ These are the features your model found most important for predicting churn.
         st.markdown("#### Model Performance")
         st.write(f"**Best Model:** {r['best_model_name']}")
 
-        # Top Predictive Drivers
         st.markdown("#### 📈 Top Predictive Drivers")
         st.info(f"""
-        These features most strongly influence predicted {target}.
-        - Higher importance = bigger impact on the prediction
-        - Use this to understand what drives higher/lower values
-        """)
+These features most strongly influence predicted {target}.
+- Higher importance = bigger impact on the prediction
+- Use this to understand what drives higher/lower values
+""")
 
         if r["importances"] is not None:
             top_drivers = pd.Series(r["importances"], index=r["feature_names"]).sort_values(ascending=False).head(15)
@@ -1154,7 +1338,6 @@ These are the features your model found most important for predicting churn.
         else:
             st.info("Feature importance not available for this model.")
 
-        # Export
         st.markdown("### 📥 Export Predictions")
         csv_full = r["df_with_preds"].to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -1165,7 +1348,6 @@ These are the features your model found most important for predicting churn.
             use_container_width=True
         )
 
-        # Optional: Top predicted values
         pred_col = f"{target}_predicted"
         if pred_col in r["df_with_preds"].columns:
             top_pred = r["df_with_preds"].nlargest(100, pred_col)
@@ -1177,17 +1359,16 @@ These are the features your model found most important for predicting churn.
                 mime="text/csv"
             )
 
-        # Recommendations
         st.markdown("#### 💡 Actionable Recommendations")
         st.write(f"""
 1. Use predicted {target} to prioritize customers, properties, or opportunities
 2. Focus on improving top predictive drivers to increase outcomes
 3. Monitor model performance over time — retrain with fresh data
 4. Export predictions to your CRM, sales, or operations tools
-        """)
+""")
 
     # ============================================================
-    # TIME SERIES INSIGHTS (Your original — unchanged)
+    # TIME SERIES INSIGHTS (UPDATED — properly indented)
     # ============================================================
     elif analysis_type == "timeseries":
         if "timeseries_results" not in st.session_state:
@@ -1199,102 +1380,145 @@ These are the features your model found most important for predicting churn.
 
         r = st.session_state.timeseries_results
 
-        st.success("Time-Series Forecast Complete! Here's your summary.")
+        forecast = r.get("forecast")
+        if forecast is None:
+            forecast = r.get("forecast_daily")
 
-        st.markdown("#### 90-Day Forecast (Daily Detail)")
+        if forecast is None:
+            st.error("Forecast results are missing. Please re-run the forecast.")
+            return
+
+        actuals = st.session_state.get("timeseries_actuals")  # optional but recommended
+
+        st.success("Time-Series Forecast Complete! Here's your summary.")
+        st.markdown("#### Forecast + Historical")
+
         fig = go.Figure()
 
-        # Historical actuals — extract from forecast_daily where yhat is close to actual
-        # But simpler: use the forecast_df which has yhat for all, but actuals are in original data
-        # Instead, we'll use the full forecast_daily and show yhat, with historical as subset
-        # Historical points (from original data)
-        historical_dates = r["forecast_daily"]["ds"][r["forecast_daily"]["ds"] <= r["forecast_daily"]["ds"].iloc[-91]]  # Approx historical
-        fig.add_trace(go.Scatter(
-            x=r["forecast_daily"]["ds"],
-            y=r["forecast_daily"]["yhat"].where(r["forecast_daily"]["ds"] <= r["forecast_daily"]["ds"].max() - pd.Timedelta(days=90), None),
-            mode="lines+markers",
-            name="Historical Actuals",
-            line=dict(color="blue")
-        ))
+        # Historical actuals (if available)
+        if actuals is not None and {"ds", "y"}.issubset(actuals.columns):
+            fig.add_trace(go.Scatter(
+                x=actuals["ds"],
+                y=actuals["y"],
+                mode="lines+markers",
+                name="Historical Actuals"
+            ))
+            last_actual_value = float(actuals["y"].iloc[-1])
+        else:
+            # Fallback: approximate last actual using forecast
+            last_actual_value = float(forecast["yhat"].iloc[-91]) if len(forecast) >= 91 else float(forecast["yhat"].iloc[0])
 
         # Forecast line
         fig.add_trace(go.Scatter(
-            x=r["forecast_daily"]["ds"],
-            y=r["forecast_daily"]["yhat"],
+            x=forecast["ds"],
+            y=forecast["yhat"],
             mode="lines",
-            name="Forecast",
-            line=dict(color="green")
+            name="Forecast"
         ))
 
         # Confidence band
         fig.add_trace(go.Scatter(
-            x=r["forecast_daily"]["ds"],
-            y=r["forecast_daily"]["yhat_upper"],
+            x=forecast["ds"],
+            y=forecast["yhat_upper"],
             mode="lines",
             line=dict(width=0),
             showlegend=False
         ))
         fig.add_trace(go.Scatter(
-            x=r["forecast_daily"]["ds"],
-            y=r["forecast_daily"]["yhat_lower"],
+            x=forecast["ds"],
+            y=forecast["yhat_lower"],
             mode="lines",
             fill="tonexty",
-            fillcolor="rgba(0,176,246,0.2)",
             line=dict(width=0),
-            name="95% Confidence"
+            name="Confidence interval"
         ))
 
-        fig.update_layout(title="Historical + 90-Day Forecast", hovermode="x unified")
+        fig.update_layout(title="Historical + Forecast", hovermode="x unified")
         st.plotly_chart(fig, use_container_width=True)
 
         # Key metrics
-        last_actual = r["forecast_daily"]["yhat"].iloc[-91]  # Approx last historical
-        forecast_end = r["forecast_daily"]["yhat"].iloc[-1]
-        change = forecast_end - last_actual
+        forecast_end = float(forecast["yhat"].iloc[-1])
+        change = forecast_end - last_actual_value
 
         col1, col2 = st.columns(2)
-        col1.metric("Current Value", f"{last_actual:,.0f}")
-        col2.metric("Forecast in 90 Days", f"{forecast_end:,.0f}")
+        col1.metric("Current Value", f"{last_actual_value:,.0f}")
+        col2.metric("Forecast at End", f"{forecast_end:,.0f}")
 
         if abs(change) > 100:
             if change > 0:
-                st.success(f"📈 Expected increase of {change:,.0f} over 90 days")
+                st.success(f"📈 Expected increase of {change:,.0f} over the forecast horizon")
             else:
-                st.warning(f"📉 Expected decrease of {abs(change):,.0f} over 90 days")
+                st.warning(f"📉 Expected decrease of {abs(change):,.0f} over the forecast horizon")
         else:
             st.info("➡️ Stable value expected")
 
         # Export
         st.markdown("### 📥 Export Options")
+        st.caption("Both exports include historical values plus the forecast (with confidence bounds).")
+
         col1, col2 = st.columns(2)
 
+        # Build Daily "Historical + Forecast" export (single button)
+        date_name = r.get("date_col", "Date")
+        metric_name = r.get("value_col", "metric")
+
+        export_daily = forecast[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+        export_daily = export_daily.rename(columns={
+            "ds": date_name,
+            "yhat": "forecast",
+            "yhat_lower": "forecast_lower",
+            "yhat_upper": "forecast_upper"
+        })
+
+        # Add historical actuals aligned to the same date column (if available)
+        if actuals is not None and {"ds", "y"}.issubset(actuals.columns):
+            hist_daily = actuals[["ds", "y"]].copy()
+            hist_daily = hist_daily.rename(columns={"ds": date_name, "y": f"historical_{metric_name}"})
+            export_daily = export_daily.merge(hist_daily, on=date_name, how="left")
+        else:
+            # Keep file explicit even if actuals aren't available
+            export_daily[f"historical_{metric_name}"] = np.nan
+
         with col1:
-            csv_daily = r["forecast_daily"][["ds", "yhat", "yhat_lower", "yhat_upper"]].rename(columns={"ds": r["date_col"]}).to_csv(index=False).encode("utf-8")
+            csv_daily = export_daily.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "⬇️ Download Daily Forecast",
+                "⬇️ Download Daily Detail (History + Forecast)",
                 csv_daily,
-                file_name=f"daily_forecast_{r['value_col']}.csv",
-                mime="text/csv"
+                file_name=f"daily_detail_{metric_name}.csv",
+                mime="text/csv",
+                use_container_width=True
             )
 
         with col2:
-            csv_monthly = r["forecast_monthly"].to_csv(index=False).encode("utf-8")
+            # Keep your existing monthly export logic (already includes history + forecast in your case)
+            monthly = r.get("forecast_monthly")
+            if monthly is None:
+                monthly = (
+                    forecast.set_index("ds")[["yhat", "yhat_lower", "yhat_upper"]]
+                    .resample("ME").mean()
+                    .reset_index()
+                    .rename(columns={"ds": date_name})
+                )
+
+            csv_monthly = monthly.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "⬇️ Download Monthly Summary",
+                "⬇️ Download Monthly Summary (History + Forecast)",
                 csv_monthly,
-                file_name=f"monthly_forecast_{r['value_col']}.csv",
-                mime="text/csv"
+                file_name=f"monthly_summary_{metric_name}.csv",
+                mime="text/csv",
+                use_container_width=True
             )
 
+
         st.markdown("#### Recommendations")
-        st.write("""
-        - Monitor actuals vs forecast monthly
-        - Use for planning: budget, inventory, staffing
-        - Re-run with new data to stay current
-        """)
-           
+        st.write(
+            "- Compare actuals vs forecast as new data arrives\n"
+            "- Use this forecast for planning (budget, staffing, inventory)\n"
+            "- Re-run regularly to keep projections current"
+        )
+
     # ============================================================
-    # CLUSTERING INSIGHTS 
+    # CLUSTERING INSIGHTS
     # ============================================================
     elif analysis_type == "clustering":
         if "clustering_results" not in st.session_state:
@@ -1310,15 +1534,15 @@ These are the features your model found most important for predicting churn.
         st.success(f"Clustering Complete: Discovered {n_clusters} Customer Segments")
 
         st.markdown("#### Cluster Profiles")
-        st.dataframe(r["profile"].style.background_gradient(cmap="viridis"), use_container_width=True)
+        st.dataframe(r["profile"], use_container_width=True)
 
         st.markdown("#### Recommendations")
         st.write(f"""
-        - Name and describe each cluster based on key traits
-        - Tailor marketing, product, or support strategies to each segment
-        - Monitor how cluster sizes and behaviors change over time
-        - Export data to activate segment-specific campaigns
-        """)
+- Name and describe each cluster based on key traits
+- Tailor marketing, product, or support strategies to each segment
+- Monitor how cluster sizes and behaviors change over time
+- Export data to activate segment-specific campaigns
+""")
 
         st.markdown("### 📥 Export Segmented Data")
         csv = r["df_clustered"].to_csv(index=False).encode("utf-8")
@@ -1329,7 +1553,7 @@ These are the features your model found most important for predicting churn.
             mime="text/csv",
             use_container_width=True
         )
-    
+
     # ============================================================
     # COMMON FOOTER
     # ============================================================
