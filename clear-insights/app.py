@@ -12,7 +12,7 @@ from sklearn.linear_model import LogisticRegression
 import xgboost as xgb
 from lightgbm import LGBMClassifier
 from sklearn.metrics import accuracy_score, roc_auc_score
-import shap
+# import shap No shap explain for this version
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from prophet import Prophet
