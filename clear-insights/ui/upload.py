@@ -1,5 +1,9 @@
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 # ------------------------------------------------------------
@@ -215,7 +219,7 @@ def step_0_upload() -> None:
         with col_a:
             st.download_button(
                 "Download Churn Sample",
-                data=open("churn_sample.csv", "rb").read(),
+                data=(BASE_DIR / "churn_sample.csv").read_bytes(),
                 file_name="churn_sample.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -223,7 +227,7 @@ def step_0_upload() -> None:
         with col_b:
             st.download_button(
                 "Download Regression Sample",
-                data=open("regression_sample.csv", "rb").read(),
+                data=(BASE_DIR / "regression_sample.csv").read_bytes(),
                 file_name="regression_sample.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -231,7 +235,7 @@ def step_0_upload() -> None:
         with col_c:
             st.download_button(
                 "Download Segmentation Sample",
-                data=open("segmentation_sample.csv", "rb").read(),
+                data=(BASE_DIR / "segmentation_sample.csv").read_bytes(),
                 file_name="segmentation_sample.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -239,7 +243,7 @@ def step_0_upload() -> None:
         with col_d:
             st.download_button(
                 "Download Time Series Sample",
-                data=open("timeseries_sample.csv", "rb").read(),
+                data=(BASE_DIR / "timeseries_sample.csv").read_bytes(),
                 file_name="timeseries_sample.csv",
                 mime="text/csv",
                 use_container_width=True,
