@@ -210,6 +210,41 @@ def step_0_upload() -> None:
         except Exception as e:
             st.error(f"Error loading file: {e}")
 
+    with st.expander("Download a sample data file", expanded=False):
+        col_a, col_b, col_c, col_d = st.columns(4)
+        with col_a:
+            st.download_button(
+                "Download Churn Sample",
+                data=open("churn_sample.csv", "rb").read(),
+                file_name="churn_sample.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with col_b:
+            st.download_button(
+                "Download Regression Sample",
+                data=open("regression_sample.csv", "rb").read(),
+                file_name="regression_sample.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with col_c:
+            st.download_button(
+                "Download Segmentation Sample",
+                data=open("segmentation_sample.csv", "rb").read(),
+                file_name="segmentation_sample.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+        with col_d:
+            st.download_button(
+                "Download Time Series Sample",
+                data=open("timeseries_sample.csv", "rb").read(),
+                file_name="timeseries_sample.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
     # Preview section (framed like the mockup)
     st.markdown(
         """
