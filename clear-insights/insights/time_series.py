@@ -1,7 +1,9 @@
+import math
 import numpy as np
 import pandas as pd
 import streamlit as st
 from prophet import Prophet
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
 from ui.icons import heading_html
 from ui.navigation import back_button
@@ -13,6 +15,48 @@ from utils.dates import (
     score_value_column,
 )
 from utils.plotting import plot_forecast, plot_historical
+
+
+# -------------------------
+# Helpers
+# -------------------------
+def _season_length_from_freq(freq: str) -> int:
+    return {"Daily": 7, "Weekly": 52, "Monthly": 12}.get(freq, 1)
+
+
+def _holdout_size(n: int) -> int:
+    test_size = max(10, int(0.2 * n))
+    test_size = min(test_size, n - 10)
+    if test_size < 5:
+        test_size = max(1, n // 5)
+    return test_size
+
+
+def _safe_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    y_true = np.array(y_true, dtype=float)
+    y_pred = np.array(y_pred, dtype=float)
+    mask = y_true != 0
+    if mask.sum() == 0:
+        return float("nan")
+    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])))
+
+
+def _periods_from_days(freq: str, days: int = 90) -> int:
+    if freq == "Daily":
+        return days
+    if freq == "Weekly":
+        return int(math.ceil(days / 7))
+    if freq == "Monthly":
+        return int(math.ceil(days / 30))
+    return days
+
+
+def _add_simple_intervals(forecast_df: pd.DataFrame, resid_std: float) -> pd.DataFrame:
+    if not np.isfinite(resid_std) or resid_std <= 0:
+        resid_std = 0.0
+    forecast_df["yhat_lower"] = forecast_df["yhat"] - 1.96 * resid_std
+    forecast_df["yhat_upper"] = forecast_df["yhat"] + 1.96 * resid_std
+    return forecast_df
 
 
 # ------------------------------------------------------------
@@ -169,21 +213,149 @@ def run_timeseries():
     fig_hist = plot_historical(prophet_df)
     st.plotly_chart(fig_hist, use_container_width=True)
 
+    compare_models = st.checkbox(
+        "Compare models (Prophet, Seasonal Naive, Holt-Winters)",
+        value=False
+    )
+
     # -------------------------
     # Forecast
     # -------------------------
     if st.button("Generate 90-Day Forecast", type="primary"):
         with st.spinner("Building forecast..."):
-            m = Prophet(
-                yearly_seasonality=True,
-                weekly_seasonality=(freq != "Monthly"),
-                daily_seasonality=False,
-                changepoint_prior_scale=0.05
-            )
-            m.fit(prophet_df)
+            best_model_name = "Prophet"
+            leaderboard = None
+            season_length = _season_length_from_freq(freq)
+            if len(prophet_df) < season_length * 2:
+                season_length = 1
+            forecast_periods = _periods_from_days(freq, 90)
 
-            future = m.make_future_dataframe(periods=90, freq=freq_map[freq])
-            forecast = m.predict(future)
+            if compare_models:
+                test_size = _holdout_size(len(prophet_df))
+                train_df = prophet_df.iloc[:-test_size]
+                test_df = prophet_df.iloc[-test_size:]
+
+                results = []
+
+                # Prophet
+                try:
+                    m = Prophet(
+                        yearly_seasonality=True,
+                        weekly_seasonality=(freq != "Monthly"),
+                        daily_seasonality=False,
+                        changepoint_prior_scale=0.05
+                    )
+                    m.fit(train_df)
+                    pred = m.predict(test_df[["ds"]])["yhat"].values
+                    results.append({
+                        "Model": "Prophet",
+                        "MAE": float(np.mean(np.abs(test_df["y"].values - pred))),
+                        "MAPE": _safe_mape(test_df["y"].values, pred)
+                    })
+                except Exception as e:
+                    st.warning(f"Prophet comparison failed: {e}")
+
+                # Seasonal Naive
+                try:
+                    last_season = train_df["y"].values[-season_length:] if season_length > 1 else np.array([train_df["y"].values[-1]])
+                    pred = np.tile(last_season, int(np.ceil(test_size / len(last_season))))[:test_size]
+                    results.append({
+                        "Model": "Seasonal Naive",
+                        "MAE": float(np.mean(np.abs(test_df["y"].values - pred))),
+                        "MAPE": _safe_mape(test_df["y"].values, pred)
+                    })
+                except Exception as e:
+                    st.warning(f"Seasonal Naive comparison failed: {e}")
+
+                # Holt-Winters / ETS
+                try:
+                    hw_seasonal = "add" if season_length > 1 else None
+                    hw_model = ExponentialSmoothing(
+                        train_df["y"].values,
+                        trend="add",
+                        seasonal=hw_seasonal,
+                        seasonal_periods=season_length if season_length > 1 else None,
+                        initialization_method="estimated"
+                    )
+                    hw_fit = hw_model.fit(optimized=True)
+                    pred = hw_fit.forecast(test_size)
+                    results.append({
+                        "Model": "Holt-Winters (ETS)",
+                        "MAE": float(np.mean(np.abs(test_df["y"].values - pred))),
+                        "MAPE": _safe_mape(test_df["y"].values, pred)
+                    })
+                except Exception as e:
+                    st.warning(f"Holt-Winters comparison failed: {e}")
+
+                if results:
+                    leaderboard = (
+                        pd.DataFrame(results)
+                        .sort_values("MAE", ascending=True)
+                        .reset_index(drop=True)
+                    )
+                    st.markdown(heading_html("Model comparison (holdout)", "chart", level=3), unsafe_allow_html=True)
+                    st.dataframe(
+                        leaderboard.style.format({"MAE": "{:.3f}", "MAPE": "{:.1%}"}),
+                        use_container_width=True
+                    )
+                    best_model_name = leaderboard.iloc[0]["Model"]
+                else:
+                    st.warning("Model comparison failed. Falling back to Prophet.")
+                    best_model_name = "Prophet"
+
+            # Fit selected model on full data and forecast
+            if best_model_name == "Prophet":
+                m = Prophet(
+                    yearly_seasonality=True,
+                    weekly_seasonality=(freq != "Monthly"),
+                    daily_seasonality=False,
+                    changepoint_prior_scale=0.05
+                )
+                m.fit(prophet_df)
+                future = m.make_future_dataframe(periods=forecast_periods, freq=freq_map[freq])
+                forecast = m.predict(future)
+            elif best_model_name == "Seasonal Naive":
+                resid = None
+                if season_length > 1 and len(prophet_df) > season_length:
+                    resid = prophet_df["y"].values[season_length:] - prophet_df["y"].values[:-season_length]
+                elif len(prophet_df) > 1:
+                    resid = np.diff(prophet_df["y"].values)
+                resid_std = float(np.std(resid)) if resid is not None and len(resid) > 1 else 0.0
+
+                last_season = prophet_df["y"].values[-season_length:] if season_length > 1 else np.array([prophet_df["y"].values[-1]])
+                future_dates = pd.date_range(
+                    start=prophet_df["ds"].iloc[-1],
+                    periods=forecast_periods + 1,
+                    freq=freq_map[freq]
+                )[1:]
+                yhat = np.tile(last_season, int(np.ceil(len(future_dates) / len(last_season))))[:len(future_dates)]
+                forecast = pd.DataFrame({
+                    "ds": future_dates,
+                    "yhat": yhat
+                })
+                forecast = _add_simple_intervals(forecast, resid_std)
+            else:
+                hw_seasonal = "add" if season_length > 1 else None
+                hw_model = ExponentialSmoothing(
+                    prophet_df["y"].values,
+                    trend="add",
+                    seasonal=hw_seasonal,
+                    seasonal_periods=season_length if season_length > 1 else None,
+                    initialization_method="estimated"
+                )
+                hw_fit = hw_model.fit(optimized=True)
+                resid_std = float(np.std(hw_fit.resid)) if hasattr(hw_fit, "resid") else 0.0
+                future_dates = pd.date_range(
+                    start=prophet_df["ds"].iloc[-1],
+                    periods=forecast_periods + 1,
+                    freq=freq_map[freq]
+                )[1:]
+                yhat = hw_fit.forecast(len(future_dates))
+                forecast = pd.DataFrame({
+                    "ds": future_dates,
+                    "yhat": yhat
+                })
+                forecast = _add_simple_intervals(forecast, resid_std)
 
             # Build monthly summary for downloads/insights (even if freq is weekly/monthly)
             try:
@@ -212,6 +384,8 @@ def run_timeseries():
                 "value_col": value_col,
                 "date_col": date_col,
                 "frequency": freq,
+                "best_model_name": best_model_name,
+                "leaderboard": leaderboard,
 
                 # Backwards-compatible keys (older insights expects these)
                 "forecast_daily": forecast,
