@@ -1,8 +1,19 @@
 import streamlit as st
 
 
+def _reset_to_home() -> None:
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.session_state.step = 0
+    st.rerun()
+
+
 def sidebar_progress() -> None:
     with st.sidebar:
+        if st.button("Home / Start Over", type="secondary", use_container_width=True):
+            _reset_to_home()
+        st.caption("Resets progress and clears uploaded data.")
+        st.markdown("---")
         st.markdown("## Clear Insights Progress")
         steps = [
             "1. Load Data",
