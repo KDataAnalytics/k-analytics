@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from sklearn.cluster import AgglomerativeClustering, KMeans
+from sklearn.metrics import silhouette_score
+from sklearn.mixture import GaussianMixture
 from ui.icons import heading_html
 from ui.navigation import back_button
 from utils.plotting import plot_elbow
@@ -45,8 +48,6 @@ def run_clustering():
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    from sklearn.cluster import KMeans
-
     st.markdown(heading_html("Finding Optimal Number of Clusters", "cluster", level=3), unsafe_allow_html=True)
     with st.spinner("Running elbow analysis..."):
         inertias = []
@@ -74,10 +75,67 @@ def run_clustering():
     st.caption(f"Suggested k based on the elbow: {suggested_k}")
     optimal_k = st.slider("Select number of clusters", 2, 8, suggested_k)
 
+    compare_models = st.checkbox(
+        "Compare models (KMeans, Agglomerative, Gaussian Mixture)",
+        value=False
+    )
+
     if st.button("Run Clustering", type="primary"):
         with st.spinner(f"Clustering into {optimal_k} groups..."):
+            best_model_name = "KMeans"
+            clusters = None
+            leaderboard = None
+
+            results = []
+
             kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
-            clusters = kmeans.fit_predict(X_scaled)
+            kmeans_labels = kmeans.fit_predict(X_scaled)
+            clusters = kmeans_labels
+
+            if compare_models:
+                if len(set(kmeans_labels)) > 1:
+                    results.append({
+                        "Model": "KMeans",
+                        "Silhouette": float(silhouette_score(X_scaled, kmeans_labels))
+                    })
+
+                agg = AgglomerativeClustering(n_clusters=optimal_k, linkage="ward")
+                agg_labels = agg.fit_predict(X_scaled)
+                if len(set(agg_labels)) > 1:
+                    results.append({
+                        "Model": "Agglomerative",
+                        "Silhouette": float(silhouette_score(X_scaled, agg_labels))
+                    })
+
+                gmm = GaussianMixture(n_components=optimal_k, random_state=42)
+                gmm_labels = gmm.fit_predict(X_scaled)
+                if len(set(gmm_labels)) > 1:
+                    results.append({
+                        "Model": "Gaussian Mixture",
+                        "Silhouette": float(silhouette_score(X_scaled, gmm_labels))
+                    })
+
+                if results:
+                    leaderboard = (
+                        pd.DataFrame(results)
+                        .sort_values("Silhouette", ascending=False)
+                        .reset_index(drop=True)
+                    )
+                    st.markdown(heading_html("Model comparison", "chart", level=3), unsafe_allow_html=True)
+                    st.dataframe(
+                        leaderboard.style.format({"Silhouette": "{:.3f}"}),
+                        use_container_width=True
+                    )
+
+                    best_model_name = leaderboard.iloc[0]["Model"]
+                    if best_model_name == "Agglomerative":
+                        clusters = agg_labels
+                    elif best_model_name == "Gaussian Mixture":
+                        clusters = gmm_labels
+
+            if clusters is None:
+                st.error("Clustering failed. Please try again.")
+                return
 
             df_clustered = df.loc[X.index].copy()
             df_clustered["Cluster"] = clusters
@@ -138,7 +196,9 @@ def run_clustering():
                 "df_clustered": df_clustered,
                 "features": selected_features,
                 "n_clusters": optimal_k,
-                "profile": profile
+                "profile": profile,
+                "best_model_name": best_model_name,
+                "leaderboard": leaderboard
             }
 
     # === Continue button - always visible after clustering ===
