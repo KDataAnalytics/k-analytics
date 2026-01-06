@@ -217,25 +217,42 @@ These features most strongly influence predicted {target}.
             # Fallback: approximate last actual using forecast
             last_actual_value = float(forecast["yhat"].iloc[-91]) if len(forecast) >= 91 else float(forecast["yhat"].iloc[0])
 
+        forecast_plot = forecast.copy()
+        if "yhat_lower" not in forecast_plot.columns:
+            forecast_plot["yhat_lower"] = forecast_plot["yhat"]
+        if "yhat_upper" not in forecast_plot.columns:
+            forecast_plot["yhat_upper"] = forecast_plot["yhat"]
+
+        if actuals is not None and {"ds", "y"}.issubset(actuals.columns):
+            last_actual_date = actuals["ds"].iloc[-1]
+            if forecast_plot["ds"].min() > last_actual_date:
+                anchor = pd.DataFrame({
+                    "ds": [last_actual_date],
+                    "yhat": [last_actual_value],
+                    "yhat_lower": [last_actual_value],
+                    "yhat_upper": [last_actual_value]
+                })
+                forecast_plot = pd.concat([anchor, forecast_plot], ignore_index=True).sort_values("ds")
+
         # Forecast line
         fig.add_trace(go.Scatter(
-            x=forecast["ds"],
-            y=forecast["yhat"],
+            x=forecast_plot["ds"],
+            y=forecast_plot["yhat"],
             mode="lines",
             name="Forecast"
         ))
 
         # Confidence band
         fig.add_trace(go.Scatter(
-            x=forecast["ds"],
-            y=forecast["yhat_upper"],
+            x=forecast_plot["ds"],
+            y=forecast_plot["yhat_upper"],
             mode="lines",
             line=dict(width=0),
             showlegend=False
         ))
         fig.add_trace(go.Scatter(
-            x=forecast["ds"],
-            y=forecast["yhat_lower"],
+            x=forecast_plot["ds"],
+            y=forecast_plot["yhat_lower"],
             mode="lines",
             fill="tonexty",
             line=dict(width=0),
