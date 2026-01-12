@@ -187,7 +187,7 @@ def step_0_upload() -> None:
 
       <div class="ci-upload-card">
         <div class="ci-upload-title">Upload your data to get started</div>
-        <div class="ci-upload-sub">Drag and drop a CSV file below. Next: we'll profile your columns and suggest the best objective.</div>
+        <div class="ci-upload-sub">Drag and drop a CSV file below. After upload, we'll check data quality and offer quick fixes. Next: we'll suggest the best objective.</div>
       </div>
     </div>
     """,
