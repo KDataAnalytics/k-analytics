@@ -29,7 +29,7 @@ def _detect_date_columns(df: pd.DataFrame, threshold: float = 0.7) -> list[str]:
 def _date_parse_rates(df: pd.DataFrame) -> dict[str, float]:
     rates: dict[str, float] = {}
     for col in df.columns:
-        if np.issubdtype(df[col].dtype, np.number):
+        if pd.api.types.is_numeric_dtype(df[col]):
             continue
         sample = df[col].dropna()
         if sample.empty:
